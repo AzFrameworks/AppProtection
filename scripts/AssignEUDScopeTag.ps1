@@ -29,7 +29,7 @@
     IT Operations Team
 
 .VERSION
-    1.2 - Fixed app protection policy handling
+    1.3 - Added pagination, retry logic, and removed code duplication
 #>
 
 [CmdletBinding()]
@@ -37,6 +37,9 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$WhatIf
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
 #region Helper Functions
 
@@ -66,6 +69,282 @@ Function Write-Log {
     # Also write to log file
     $logFile = "ScopeTag-Assignment-$(Get-Date -Format 'yyyyMMdd').log"
     "$timestamp [$Level] $Message" | Out-File -FilePath $logFile -Append -Encoding UTF8
+}
+
+Function Invoke-MgGraphRequestWithRetry {
+    <#
+    .SYNOPSIS
+        Invokes a Graph API request with exponential backoff and jitter for rate limits.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Method,
+        [Parameter(Mandatory=$true)]
+        [string]$Uri,
+        [Parameter(Mandatory=$false)]
+        [string]$Body,
+        [Parameter(Mandatory=$false)]
+        [string]$ContentType = "application/json",
+        [Parameter(Mandatory=$false)]
+        [int]$MaxRetries = 5
+    )
+    $retryCount = 0
+    $baseDelayMs = 1000
+    
+    while ($true) {
+        try {
+            if ($Body) {
+                return Invoke-MgGraphRequest -Method $Method -Uri $Uri -Body $Body -ContentType $ContentType -ErrorAction Stop
+            } else {
+                return Invoke-MgGraphRequest -Method $Method -Uri $Uri -ErrorAction Stop
+            }
+        }
+        catch {
+            $errorRecord = $_
+            $exception = $errorRecord.Exception
+            $statusCode = 0
+            
+            if ($exception.Response) {
+                $statusCode = [int]$exception.Response.StatusCode
+            } elseif ($errorRecord.ErrorDetails -and $errorRecord.ErrorDetails.Message) {
+                if ($errorRecord.ErrorDetails.Message -match 'TooManyRequests|429') {
+                    $statusCode = 429
+                }
+            }
+            
+            # Retry on 429 (Too Many Requests) or 5xx errors
+            if ($statusCode -eq 429 -or ($statusCode -ge 500 -and $statusCode -lt 600)) {
+                if ($retryCount -ge $MaxRetries) {
+                    Write-Log -Message "Max retries ($MaxRetries) reached for $Uri" -Level "Error"
+                    throw $errorRecord
+                }
+                $retryCount++
+                # Respect Retry-After header when present, otherwise exponential backoff with jitter
+                $retryAfterMs = 0
+                if ($exception.Response -and $exception.Response.Headers) {
+                    $retryAfterHeader = $exception.Response.Headers['Retry-After']
+                    if ($retryAfterHeader) {
+                        $retryAfterSec = 0
+                        if ([int]::TryParse($retryAfterHeader, [ref]$retryAfterSec)) {
+                            $retryAfterMs = $retryAfterSec * 1000
+                        }
+                    }
+                }
+                if ($retryAfterMs -gt 0) {
+                    $delayMs = $retryAfterMs
+                } else {
+                    $jitter = Get-Random -Minimum 0 -Maximum 500
+                    $delayMs = ($baseDelayMs * [math]::Pow(2, $retryCount - 1)) + $jitter
+                }
+                Write-Log -Message "Graph API rate limited or server error ($statusCode). Retrying in $($delayMs)ms (Attempt $retryCount of $MaxRetries)..." -Level "Warning"
+                Start-Sleep -Milliseconds $delayMs
+            }
+            else {
+                throw $errorRecord
+            }
+        }
+    }
+}
+
+Function Process-PolicyScopeTags {
+    <#
+    .SYNOPSIS
+        Processes a specific type of Intune policy, handling pagination and updating scope tags.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$EndpointUri,
+        [Parameter(Mandatory=$true)]
+        [string]$PolicyType,
+        [Parameter(Mandatory=$true)]
+        [string]$EudScopeTagId,
+        [Parameter(Mandatory=$false)]
+        [switch]$IsAppProtection,
+        [Parameter(Mandatory=$false)]
+        [switch]$WhatIfMode
+    )
+    
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host " Processing $PolicyType" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    
+    Write-Log -Message "Retrieving $PolicyType..." -Level "Info"
+    
+    $localProcessed = @()
+    $localUpdated = 0
+    $localSkipped = 0
+    $localError = 0
+    
+    $MaxPages = 100
+    
+    try {
+        $currentUri = "$EndpointUri?`$select=id,displayName,roleScopeTagIds"
+        $pageCount = 1
+        
+        while ($currentUri -and $pageCount -le $MaxPages) {
+            Write-Log -Message "Fetching page $pageCount of $PolicyType..." -Level "Info"
+            $response = Invoke-MgGraphRequestWithRetry -Method GET -Uri $currentUri
+            $policies = $response.value
+            
+            if ($policies) {
+                Write-Log -Message "Processing $($policies.Count) policies from page $pageCount..." -Level "Info"
+                
+                foreach ($policy in $policies) {
+                    Write-Host ""
+                    Write-Log -Message "Processing: $($policy.displayName)" -Level "Info"
+                    Write-Log -Message "  Type: $PolicyType" -Level "Info"
+                    Write-Log -Message "  ID: $($policy.id)" -Level "Info"
+                    
+                    # Check if policy name starts with "PAW-"
+                    if ($policy.displayName -like "PAW-*") {
+                        Write-Log -Message "  SKIPPED: Policy name starts with 'PAW-'" -Level "Warning"
+                        $localSkipped++
+                        
+                        $localProcessed += [PSCustomObject]@{
+                            PolicyName = $policy.displayName
+                            PolicyType = $PolicyType
+                            Action = "Skipped - PAW prefix"
+                            OldScopeTags = "N/A"
+                            NewScopeTags = "N/A"
+                        }
+                        continue
+                    }
+                    
+                    # For app protection policies, sometimes we need to retrieve full policy details
+                    if ($IsAppProtection -and $null -eq $policy.roleScopeTagIds) {
+                        Write-Log -Message "  Retrieving full policy details to get scope tags..." -Level "Info"
+                        try {
+                            $detailUri = "$EndpointUri/$($policy.id)?`$select=id,displayName,roleScopeTagIds"
+                            $policyDetail = Invoke-MgGraphRequestWithRetry -Method GET -Uri $detailUri
+                            
+                            if ($null -ne $policyDetail.roleScopeTagIds -and $policyDetail.roleScopeTagIds.Count -gt 0) {
+                                $policy.roleScopeTagIds = $policyDetail.roleScopeTagIds
+                            }
+                        }
+                        catch {
+                            Write-Log -Message "  Warning: Could not retrieve full policy details: $($_.Exception.Message)" -Level "Warning"
+                        }
+                    }
+                    
+                    # Get current role scope tag IDs
+                    if ($null -eq $policy.roleScopeTagIds -or $policy.roleScopeTagIds.Count -eq 0) {
+                        $currentScopeTagIds = @("0")
+                        Write-Log -Message "  Policy has no explicit scope tags - treating as Default (0)" -Level "Info"
+                    }
+                    else {
+                        $currentScopeTagIds = $policy.roleScopeTagIds
+                        Write-Log -Message "  Current scope tags: $($currentScopeTagIds -join ', ')" -Level "Info"
+                    }
+                    
+                    # Check if only Default scope tag (ID = 0) is assigned
+                    if ($currentScopeTagIds.Count -eq 1 -and $currentScopeTagIds[0] -eq "0") {
+                        Write-Log -Message "  Policy has only Default scope tag - will update" -Level "Info"
+                        
+                        if (!$WhatIfMode) {
+                            try {
+                                $updateUri = "$EndpointUri/$($policy.id)"
+                                $body = @{
+                                    roleScopeTagIds = @($EudScopeTagId)
+                                } | ConvertTo-Json -Depth 10
+                                
+                                Invoke-MgGraphRequestWithRetry -Method PATCH -Uri $updateUri -Body $body -ContentType "application/json"
+                                
+                                Write-Log -Message "  SUCCESS: Updated scope tag to EUD (ID: $EudScopeTagId)" -Level "Success"
+                                $localUpdated++
+                                
+                                $localProcessed += [PSCustomObject]@{
+                                    PolicyName = $policy.displayName
+                                    PolicyType = $PolicyType
+                                    Action = "Updated"
+                                    OldScopeTags = "0 (Default)"
+                                    NewScopeTags = "$EudScopeTagId (EUD)"
+                                }
+                            }
+                            catch {
+                                Write-Log -Message "  ERROR: Failed to update policy: $($_.Exception.Message)" -Level "Error"
+                                
+                                if ($_.ErrorDetails.Message) {
+                                    try {
+                                        $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
+                                        Write-Log -Message "  Error detail: $($errorDetail.error.message)" -Level "Error"
+                                    }
+                                    catch {
+                                        Write-Log -Message "  Error detail: $($_.ErrorDetails.Message)" -Level "Error"
+                                    }
+                                }
+                                
+                                $localError++
+                                
+                                $localProcessed += [PSCustomObject]@{
+                                    PolicyName = $policy.displayName
+                                    PolicyType = $PolicyType
+                                    Action = "Error"
+                                    OldScopeTags = "0 (Default)"
+                                    NewScopeTags = "Failed"
+                                }
+                            }
+                        }
+                        else {
+                            Write-Log -Message "  WHATIF: Would update scope tag to EUD (ID: $EudScopeTagId)" -Level "Warning"
+                            $localUpdated++
+                            
+                            $localProcessed += [PSCustomObject]@{
+                                PolicyName = $policy.displayName
+                                PolicyType = $PolicyType
+                                Action = "WhatIf - Would Update"
+                                OldScopeTags = "0 (Default)"
+                                NewScopeTags = "$EudScopeTagId (EUD)"
+                            }
+                        }
+                    }
+                    else {
+                        if ($currentScopeTagIds.Count -gt 1) {
+                            Write-Log -Message "  SKIPPED: Policy has multiple scope tags ($($currentScopeTagIds -join ', '))" -Level "Warning"
+                        }
+                        elseif ($currentScopeTagIds[0] -ne "0") {
+                            Write-Log -Message "  SKIPPED: Policy has custom scope tag ($($currentScopeTagIds[0])), not Default" -Level "Warning"
+                        }
+                        
+                        $localSkipped++
+                        
+                        $localProcessed += [PSCustomObject]@{
+                            PolicyName = $policy.displayName
+                            PolicyType = $PolicyType
+                            Action = "Skipped - Multiple or non-Default tags"
+                            OldScopeTags = ($currentScopeTagIds -join ", ")
+                            NewScopeTags = ($currentScopeTagIds -join ", ")
+                        }
+                    }
+                }
+            }
+            else {
+                Write-Log -Message "No $PolicyType found on page $pageCount" -Level "Info"
+            }
+            
+            if ($response.'@odata.nextLink') {
+                $currentUri = $response.'@odata.nextLink'
+                $pageCount++
+            } else {
+                $currentUri = $null
+            }
+        }
+        
+        if ($pageCount -gt $MaxPages) {
+            Write-Log -Message "Safety limit of $MaxPages pages reached for $PolicyType. Results may be incomplete." -Level "Error"
+        }
+    }
+    catch {
+        Write-Log -Message "Failed to retrieve or process $PolicyType : $($_.Exception.Message)" -Level "Error"
+    }
+    
+    return @{
+        Processed = $localProcessed
+        Updated = $localUpdated
+        Skipped = $localSkipped
+        Error = $localError
+    }
 }
 
 #endregion
@@ -158,7 +437,7 @@ Write-Log -Message "Retrieving scope tags from Intune..." -Level "Info"
 try {
     # Get all scope tags
     $uri = "https://graph.microsoft.com/beta/deviceManagement/roleScopeTags"
-    $scopeTagsResponse = Invoke-MgGraphRequest -Method GET -Uri $uri
+    $scopeTagsResponse = Invoke-MgGraphRequestWithRetry -Method GET -Uri $uri
     $scopeTags = $scopeTagsResponse.value
     
     Write-Log -Message "Found $($scopeTags.Count) scope tags" -Level "Success"
@@ -206,468 +485,34 @@ $updatedCount = 0
 $skippedCount = 0
 $errorCount = 0
 
-#region Compliance Policies
+# Compliance Policies
+$result = Process-PolicyScopeTags -EndpointUri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -PolicyType "Compliance Policy" -EudScopeTagId $eudScopeTagId -WhatIfMode:$WhatIf
+$processedPolicies += $result.Processed
+$updatedCount += $result.Updated
+$skippedCount += $result.Skipped
+$errorCount += $result.Error
 
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " Processing Compliance Policies" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+# Device Configuration Policies
+$result = Process-PolicyScopeTags -EndpointUri "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations" -PolicyType "Device Configuration" -EudScopeTagId $eudScopeTagId -WhatIfMode:$WhatIf
+$processedPolicies += $result.Processed
+$updatedCount += $result.Updated
+$skippedCount += $result.Skipped
+$errorCount += $result.Error
 
-Write-Log -Message "Retrieving device compliance policies..." -Level "Info"
+# App Protection Policies
+$appProtectionEndpoints = @(
+    @{Name = "iOS App Protection"; Uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosManagedAppProtections"},
+    @{Name = "Android App Protection"; Uri = "https://graph.microsoft.com/beta/deviceAppManagement/androidManagedAppProtections"},
+    @{Name = "Windows App Protection"; Uri = "https://graph.microsoft.com/beta/deviceAppManagement/windowsManagedAppProtections"}
+)
 
-try {
-    # Request with $select to ensure we get roleScopeTagIds
-    $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies?`$select=id,displayName,roleScopeTagIds"
-    $compliancePoliciesResponse = Invoke-MgGraphRequest -Method GET -Uri $uri
-    $compliancePolicies = $compliancePoliciesResponse.value
-    
-    Write-Log -Message "Found $($compliancePolicies.Count) compliance policies" -Level "Info"
-    
-    foreach ($policy in $compliancePolicies) {
-        Write-Host ""
-        Write-Log -Message "Processing: $($policy.displayName)" -Level "Info"
-        Write-Log -Message "  Type: Compliance Policy" -Level "Info"
-        Write-Log -Message "  ID: $($policy.id)" -Level "Info"
-        
-        # Check if policy name starts with "PAW-"
-        if ($policy.displayName -like "PAW-*") {
-            Write-Log -Message "  SKIPPED: Policy name starts with 'PAW-'" -Level "Warning"
-            $skippedCount++
-            
-            $processedPolicies += [PSCustomObject]@{
-                PolicyName = $policy.displayName
-                PolicyType = "Compliance"
-                Action = "Skipped - PAW prefix"
-                OldScopeTags = "N/A"
-                NewScopeTags = "N/A"
-            }
-            continue
-        }
-        
-        # Get current role scope tag IDs
-        # If roleScopeTagIds is null or empty, it means Default (0) is assigned
-        if ($null -eq $policy.roleScopeTagIds -or $policy.roleScopeTagIds.Count -eq 0) {
-            $currentScopeTagIds = @("0")
-            Write-Log -Message "  Policy has no explicit scope tags - treating as Default (0)" -Level "Info"
-        }
-        else {
-            $currentScopeTagIds = $policy.roleScopeTagIds
-            Write-Log -Message "  Current scope tags: $($currentScopeTagIds -join ', ')" -Level "Info"
-        }
-        
-        # Check if only Default scope tag (ID = 0) is assigned
-        if ($currentScopeTagIds.Count -eq 1 -and $currentScopeTagIds[0] -eq "0") {
-            Write-Log -Message "  Policy has only Default scope tag - will update" -Level "Info"
-            
-            if (!$WhatIf) {
-                try {
-                    # Update policy with EUD scope tag
-                    $updateUri = "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies/$($policy.id)"
-                    $body = @{
-                        roleScopeTagIds = @($eudScopeTagId)
-                    } | ConvertTo-Json -Depth 10
-                    
-                    Invoke-MgGraphRequest -Method PATCH -Uri $updateUri -Body $body -ContentType "application/json"
-                    
-                    Write-Log -Message "  SUCCESS: Updated scope tag to EUD (ID: $eudScopeTagId)" -Level "Success"
-                    $updatedCount++
-                    
-                    $processedPolicies += [PSCustomObject]@{
-                        PolicyName = $policy.displayName
-                        PolicyType = "Compliance"
-                        Action = "Updated"
-                        OldScopeTags = "0 (Default)"
-                        NewScopeTags = "$eudScopeTagId (EUD)"
-                    }
-                }
-                catch {
-                    Write-Log -Message "  ERROR: Failed to update policy: $($_.Exception.Message)" -Level "Error"
-                    
-                    # Try to get more detailed error
-                    if ($_.ErrorDetails.Message) {
-                        try {
-                            $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
-                            Write-Log -Message "  Error detail: $($errorDetail.error.message)" -Level "Error"
-                        }
-                        catch {
-                            Write-Log -Message "  Error detail: $($_.ErrorDetails.Message)" -Level "Error"
-                        }
-                    }
-                    
-                    $errorCount++
-                    
-                    $processedPolicies += [PSCustomObject]@{
-                        PolicyName = $policy.displayName
-                        PolicyType = "Compliance"
-                        Action = "Error"
-                        OldScopeTags = "0 (Default)"
-                        NewScopeTags = "Failed"
-                    }
-                }
-            }
-            else {
-                Write-Log -Message "  WHATIF: Would update scope tag to EUD (ID: $eudScopeTagId)" -Level "Warning"
-                $updatedCount++
-                
-                $processedPolicies += [PSCustomObject]@{
-                    PolicyName = $policy.displayName
-                    PolicyType = "Compliance"
-                    Action = "WhatIf - Would Update"
-                    OldScopeTags = "0 (Default)"
-                    NewScopeTags = "$eudScopeTagId (EUD)"
-                }
-            }
-        }
-        else {
-            if ($currentScopeTagIds.Count -eq 0) {
-                Write-Log -Message "  SKIPPED: Policy has no scope tags assigned (unexpected state)" -Level "Warning"
-            }
-            elseif ($currentScopeTagIds.Count -gt 1) {
-                Write-Log -Message "  SKIPPED: Policy has multiple scope tags ($($currentScopeTagIds -join ', '))" -Level "Warning"
-            }
-            elseif ($currentScopeTagIds[0] -ne "0") {
-                Write-Log -Message "  SKIPPED: Policy has custom scope tag ($($currentScopeTagIds[0])), not Default" -Level "Warning"
-            }
-            
-            $skippedCount++
-            
-            $processedPolicies += [PSCustomObject]@{
-                PolicyName = $policy.displayName
-                PolicyType = "Compliance"
-                Action = "Skipped - Multiple or non-Default tags"
-                OldScopeTags = ($currentScopeTagIds -join ", ")
-                NewScopeTags = ($currentScopeTagIds -join ", ")
-            }
-        }
-    }
+foreach ($endpoint in $appProtectionEndpoints) {
+    $result = Process-PolicyScopeTags -EndpointUri $endpoint.Uri -PolicyType $endpoint.Name -EudScopeTagId $eudScopeTagId -IsAppProtection -WhatIfMode:$WhatIf
+    $processedPolicies += $result.Processed
+    $updatedCount += $result.Updated
+    $skippedCount += $result.Skipped
+    $errorCount += $result.Error
 }
-catch {
-    Write-Log -Message "Failed to retrieve or process compliance policies: $($_.Exception.Message)" -Level "Error"
-}
-
-Write-Host ""
-
-#endregion
-
-#region Device Configuration Policies
-
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " Processing Device Configuration Policies" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-
-Write-Log -Message "Retrieving device configuration policies..." -Level "Info"
-
-try {
-    # Request with $select to ensure we get roleScopeTagIds
-    $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$select=id,displayName,roleScopeTagIds"
-    $configPoliciesResponse = Invoke-MgGraphRequest -Method GET -Uri $uri
-    $configPolicies = $configPoliciesResponse.value
-    
-    Write-Log -Message "Found $($configPolicies.Count) device configuration policies" -Level "Info"
-    
-    foreach ($policy in $configPolicies) {
-        Write-Host ""
-        Write-Log -Message "Processing: $($policy.displayName)" -Level "Info"
-        Write-Log -Message "  Type: Device Configuration" -Level "Info"
-        Write-Log -Message "  ID: $($policy.id)" -Level "Info"
-        
-        # Check if policy name starts with "PAW-"
-        if ($policy.displayName -like "PAW-*") {
-            Write-Log -Message "  SKIPPED: Policy name starts with 'PAW-'" -Level "Warning"
-            $skippedCount++
-            
-            $processedPolicies += [PSCustomObject]@{
-                PolicyName = $policy.displayName
-                PolicyType = "Device Configuration"
-                Action = "Skipped - PAW prefix"
-                OldScopeTags = "N/A"
-                NewScopeTags = "N/A"
-            }
-            continue
-        }
-        
-        # Get current role scope tag IDs
-        # If roleScopeTagIds is null or empty, it means Default (0) is assigned
-        if ($null -eq $policy.roleScopeTagIds -or $policy.roleScopeTagIds.Count -eq 0) {
-            $currentScopeTagIds = @("0")
-            Write-Log -Message "  Policy has no explicit scope tags - treating as Default (0)" -Level "Info"
-        }
-        else {
-            $currentScopeTagIds = $policy.roleScopeTagIds
-            Write-Log -Message "  Current scope tags: $($currentScopeTagIds -join ', ')" -Level "Info"
-        }
-        
-        # Check if only Default scope tag (ID = 0) is assigned
-        if ($currentScopeTagIds.Count -eq 1 -and $currentScopeTagIds[0] -eq "0") {
-            Write-Log -Message "  Policy has only Default scope tag - will update" -Level "Info"
-            
-            if (!$WhatIf) {
-                try {
-                    # Update policy with EUD scope tag
-                    $updateUri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations/$($policy.id)"
-                    $body = @{
-                        roleScopeTagIds = @($eudScopeTagId)
-                    } | ConvertTo-Json -Depth 10
-                    
-                    Invoke-MgGraphRequest -Method PATCH -Uri $updateUri -Body $body -ContentType "application/json"
-                    
-                    Write-Log -Message "  SUCCESS: Updated scope tag to EUD (ID: $eudScopeTagId)" -Level "Success"
-                    $updatedCount++
-                    
-                    $processedPolicies += [PSCustomObject]@{
-                        PolicyName = $policy.displayName
-                        PolicyType = "Device Configuration"
-                        Action = "Updated"
-                        OldScopeTags = "0 (Default)"
-                        NewScopeTags = "$eudScopeTagId (EUD)"
-                    }
-                }
-                catch {
-                    Write-Log -Message "  ERROR: Failed to update policy: $($_.Exception.Message)" -Level "Error"
-                    
-                    # Try to get more detailed error
-                    if ($_.ErrorDetails.Message) {
-                        try {
-                            $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
-                            Write-Log -Message "  Error detail: $($errorDetail.error.message)" -Level "Error"
-                        }
-                        catch {
-                            Write-Log -Message "  Error detail: $($_.ErrorDetails.Message)" -Level "Error"
-                        }
-                    }
-                    
-                    $errorCount++
-                    
-                    $processedPolicies += [PSCustomObject]@{
-                        PolicyName = $policy.displayName
-                        PolicyType = "Device Configuration"
-                        Action = "Error"
-                        OldScopeTags = "0 (Default)"
-                        NewScopeTags = "Failed"
-                    }
-                }
-            }
-            else {
-                Write-Log -Message "  WHATIF: Would update scope tag to EUD (ID: $eudScopeTagId)" -Level "Warning"
-                $updatedCount++
-                
-                $processedPolicies += [PSCustomObject]@{
-                    PolicyName = $policy.displayName
-                    PolicyType = "Device Configuration"
-                    Action = "WhatIf - Would Update"
-                    OldScopeTags = "0 (Default)"
-                    NewScopeTags = "$eudScopeTagId (EUD)"
-                }
-            }
-        }
-        else {
-            if ($currentScopeTagIds.Count -eq 0) {
-                Write-Log -Message "  SKIPPED: Policy has no scope tags assigned (unexpected state)" -Level "Warning"
-            }
-            elseif ($currentScopeTagIds.Count -gt 1) {
-                Write-Log -Message "  SKIPPED: Policy has multiple scope tags ($($currentScopeTagIds -join ', '))" -Level "Warning"
-            }
-            elseif ($currentScopeTagIds[0] -ne "0") {
-                Write-Log -Message "  SKIPPED: Policy has custom scope tag ($($currentScopeTagIds[0])), not Default" -Level "Warning"
-            }
-            
-            $skippedCount++
-            
-            $processedPolicies += [PSCustomObject]@{
-                PolicyName = $policy.displayName
-                PolicyType = "Device Configuration"
-                Action = "Skipped - Multiple or non-Default tags"
-                OldScopeTags = ($currentScopeTagIds -join ", ")
-                NewScopeTags = ($currentScopeTagIds -join ", ")
-            }
-        }
-    }
-}
-catch {
-    Write-Log -Message "Failed to retrieve or process device configuration policies: $($_.Exception.Message)" -Level "Error"
-}
-
-Write-Host ""
-
-#endregion
-
-#region App Protection Policies
-
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " Processing App Protection Policies" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-
-Write-Log -Message "Retrieving app protection policies..." -Level "Info"
-
-try {
-    # App protection policies have multiple endpoints for different platforms
-    $appProtectionEndpoints = @(
-        @{Name = "iOS"; Uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosManagedAppProtections"},
-        @{Name = "Android"; Uri = "https://graph.microsoft.com/beta/deviceAppManagement/androidManagedAppProtections"},
-        @{Name = "Windows"; Uri = "https://graph.microsoft.com/beta/deviceAppManagement/windowsManagedAppProtections"}
-    )
-    
-    foreach ($endpoint in $appProtectionEndpoints) {
-        Write-Log -Message "Checking $($endpoint.Name) app protection policies..." -Level "Info"
-        
-        try {
-            # CRITICAL FIX: Add $select parameter to get roleScopeTagIds
-            $listUri = "$($endpoint.Uri)?`$select=id,displayName,roleScopeTagIds"
-            $response = Invoke-MgGraphRequest -Method GET -Uri $listUri -ErrorAction SilentlyContinue
-            $policies = $response.value
-            
-            if ($policies.Count -gt 0) {
-                Write-Log -Message "Found $($policies.Count) $($endpoint.Name) app protection policies" -Level "Info"
-                
-                foreach ($policy in $policies) {
-                    Write-Host ""
-                    Write-Log -Message "Processing: $($policy.displayName)" -Level "Info"
-                    Write-Log -Message "  Type: $($endpoint.Name) App Protection" -Level "Info"
-                    Write-Log -Message "  ID: $($policy.id)" -Level "Info"
-                    
-                    # Check if policy name starts with "PAW-"
-                    if ($policy.displayName -like "PAW-*") {
-                        Write-Log -Message "  SKIPPED: Policy name starts with 'PAW-'" -Level "Warning"
-                        $skippedCount++
-                        
-                        $processedPolicies += [PSCustomObject]@{
-                            PolicyName = $policy.displayName
-                            PolicyType = "$($endpoint.Name) App Protection"
-                            Action = "Skipped - PAW prefix"
-                            OldScopeTags = "N/A"
-                            NewScopeTags = "N/A"
-                        }
-                        continue
-                    }
-                    
-                    # CRITICAL FIX: For app protection policies, sometimes we need to retrieve full policy details
-                    # to get roleScopeTagIds if it's not in the list response
-                    if ($null -eq $policy.roleScopeTagIds) {
-                        Write-Log -Message "  Retrieving full policy details to get scope tags..." -Level "Info"
-                        try {
-                            $detailUri = "$($endpoint.Uri)/$($policy.id)?`$select=id,displayName,roleScopeTagIds"
-                            $policyDetail = Invoke-MgGraphRequest -Method GET -Uri $detailUri -ErrorAction Stop
-                            
-                            if ($null -ne $policyDetail.roleScopeTagIds -and $policyDetail.roleScopeTagIds.Count -gt 0) {
-                                $policy.roleScopeTagIds = $policyDetail.roleScopeTagIds
-                            }
-                        }
-                        catch {
-                            Write-Log -Message "  Warning: Could not retrieve full policy details: $($_.Exception.Message)" -Level "Warning"
-                        }
-                    }
-                    
-                    # Get current role scope tag IDs
-                    if ($null -eq $policy.roleScopeTagIds -or $policy.roleScopeTagIds.Count -eq 0) {
-                        $currentScopeTagIds = @("0")
-                        Write-Log -Message "  Policy has no explicit scope tags - treating as Default (0)" -Level "Info"
-                    }
-                    else {
-                        $currentScopeTagIds = $policy.roleScopeTagIds
-                        Write-Log -Message "  Current scope tags: $($currentScopeTagIds -join ', ')" -Level "Info"
-                    }
-                    
-                    # Check if only Default scope tag (ID = 0) is assigned
-                    if ($currentScopeTagIds.Count -eq 1 -and $currentScopeTagIds[0] -eq "0") {
-                        Write-Log -Message "  Policy has only Default scope tag - will update" -Level "Info"
-                        
-                        if (!$WhatIf) {
-                            try {
-                                # Update URI for app protection policy
-                                $updateUri = "$($endpoint.Uri)/$($policy.id)"
-                                
-                                $body = @{
-                                    roleScopeTagIds = @($eudScopeTagId)
-                                } | ConvertTo-Json -Depth 10
-                                
-                                Invoke-MgGraphRequest -Method PATCH -Uri $updateUri -Body $body -ContentType "application/json"
-                                
-                                Write-Log -Message "  SUCCESS: Updated scope tag to EUD (ID: $eudScopeTagId)" -Level "Success"
-                                $updatedCount++
-                                
-                                $processedPolicies += [PSCustomObject]@{
-                                    PolicyName = $policy.displayName
-                                    PolicyType = "$($endpoint.Name) App Protection"
-                                    Action = "Updated"
-                                    OldScopeTags = "0 (Default)"
-                                    NewScopeTags = "$eudScopeTagId (EUD)"
-                                }
-                            }
-                            catch {
-                                Write-Log -Message "  ERROR: Failed to update policy: $($_.Exception.Message)" -Level "Error"
-                                
-                                if ($_.ErrorDetails.Message) {
-                                    try {
-                                        $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
-                                        Write-Log -Message "  Error detail: $($errorDetail.error.message)" -Level "Error"
-                                    }
-                                    catch {
-                                        Write-Log -Message "  Error detail: $($_.ErrorDetails.Message)" -Level "Error"
-                                    }
-                                }
-                                
-                                $errorCount++
-                                
-                                $processedPolicies += [PSCustomObject]@{
-                                    PolicyName = $policy.displayName
-                                    PolicyType = "$($endpoint.Name) App Protection"
-                                    Action = "Error"
-                                    OldScopeTags = "0 (Default)"
-                                    NewScopeTags = "Failed"
-                                }
-                            }
-                        }
-                        else {
-                            Write-Log -Message "  WHATIF: Would update scope tag to EUD (ID: $eudScopeTagId)" -Level "Warning"
-                            $updatedCount++
-                            
-                            $processedPolicies += [PSCustomObject]@{
-                                PolicyName = $policy.displayName
-                                PolicyType = "$($endpoint.Name) App Protection"
-                                Action = "WhatIf - Would Update"
-                                OldScopeTags = "0 (Default)"
-                                NewScopeTags = "$eudScopeTagId (EUD)"
-                            }
-                        }
-                    }
-                    else {
-                        if ($currentScopeTagIds.Count -gt 1) {
-                            Write-Log -Message "  SKIPPED: Policy has multiple scope tags ($($currentScopeTagIds -join ', '))" -Level "Warning"
-                        }
-                        elseif ($currentScopeTagIds[0] -ne "0") {
-                            Write-Log -Message "  SKIPPED: Policy has custom scope tag ($($currentScopeTagIds[0])), not Default" -Level "Warning"
-                        }
-                        
-                        $skippedCount++
-                        
-                        $processedPolicies += [PSCustomObject]@{
-                            PolicyName = $policy.displayName
-                            PolicyType = "$($endpoint.Name) App Protection"
-                            Action = "Skipped - Multiple or non-Default tags"
-                            OldScopeTags = ($currentScopeTagIds -join ", ")
-                            NewScopeTags = ($currentScopeTagIds -join ", ")
-                        }
-                    }
-                }
-            }
-            else {
-                Write-Log -Message "No $($endpoint.Name) app protection policies found" -Level "Info"
-            }
-        }
-        catch {
-            Write-Log -Message "Failed to retrieve $($endpoint.Name) app protection policies: $($_.Exception.Message)" -Level "Warning"
-        }
-    }
-}
-catch {
-    Write-Log -Message "Failed to process app protection policies: $($_.Exception.Message)" -Level "Error"
-}
-
-Write-Host ""
-
-#endregion
 
 #endregion
 
@@ -723,7 +568,5 @@ else {
     Write-Log -Message "Script completed successfully" -Level "Success"
     exit 0
 }
-
-#endregion
 
 #endregion

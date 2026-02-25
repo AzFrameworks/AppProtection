@@ -74,7 +74,7 @@ param(
 
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [ValidatePattern('^[^@]+@[^@]+\.[^@]+$')]
+    [ValidatePattern('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')]
     [string]$FactoryResetAdminEmail,
 
     [Parameter(Mandatory = $true)]
