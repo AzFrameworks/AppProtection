@@ -12,7 +12,7 @@
     "passwordSignInFailureCountBeforeFactoryReset":  null,
     "securityPreventInstallAppsFromUnknownSources":  true,
     "securityDisableUsbDebugging":  true,
-    "securityRequireVerifyApps":  false,
+    "securityRequireVerifyApps":  true,
     "deviceThreatProtectionEnabled":  false,
     "deviceThreatProtectionRequiredSecurityLevel":  "unavailable",
     "advancedThreatProtectionRequiredSecurityLevel":  "unavailable",

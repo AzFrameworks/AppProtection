@@ -1,0 +1,24 @@
+# Build / runtime artifacts
+*.csv
+!policies/Apple-App-BundleIDs.csv
+*.log
+*.mof
+MOF/
+Reports/
+Exports/
+
+# Microsoft365DSC generated files
+Import-Report-*
+ScopeTag-Assignment-*
+DeployReport-*
+IntuneExport-*
+
+# PowerShell module cache
+.psmodulepath
+
+# AI agent directives (development tooling, not application code)
+AGENTS.md
+
+# OS artifacts
+.DS_Store
+Thumbs.db

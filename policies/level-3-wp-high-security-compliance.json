@@ -12,7 +12,7 @@
     "passwordSignInFailureCountBeforeFactoryReset":  null,
     "securityPreventInstallAppsFromUnknownSources":  true,
     "securityDisableUsbDebugging":  true,
-    "securityRequireVerifyApps":  false,
+    "securityRequireVerifyApps":  true,
     "deviceThreatProtectionEnabled":  true,
     "deviceThreatProtectionRequiredSecurityLevel":  "secured",
     "advancedThreatProtectionRequiredSecurityLevel":  "secured",
@@ -26,5 +26,5 @@
     "securityRequireGooglePlayServices":  true,
     "securityRequireUpToDateSecurityProviders":  true,
     "securityRequireCompanyPortalAppIntegrity":  true,
-    "securityRequiredAndroidSafetyNetEvaluationType":  "basic"
+    "securityRequiredAndroidSafetyNetEvaluationType":  "hardwareBacked"
 }

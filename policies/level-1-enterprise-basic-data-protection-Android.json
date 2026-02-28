@@ -18,7 +18,7 @@
     "pinRequired":  true,
     "maximumPinRetries":  5,
     "simplePinBlocked":  false,
-    "minimumPinLength":  4,
+    "minimumPinLength":  6,
     "pinCharacterSet":  "numeric",
     "periodBeforePinReset":  "PT0S",
     "allowedDataStorageLocations":  [

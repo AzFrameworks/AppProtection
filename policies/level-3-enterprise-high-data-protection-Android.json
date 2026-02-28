@@ -29,7 +29,7 @@
     "printBlocked":  true,
     "fingerprintBlocked":  false,
     "disableAppPinIfDevicePinIsSet":  false,
-    "maximumRequiredOsVersion":  "11.0",
+    "maximumRequiredOsVersion":  null,
     "maximumWarningOsVersion":  null,
     "maximumWipeOsVersion":  null,
     "minimumRequiredOsVersion":  "9.0",

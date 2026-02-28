@@ -1,5 +1,5 @@
 {
-    "displayName":  "Android Enterprise Enhanced Data Protection v1.9",
+    "displayName":  "iOS/iPadOS Enterprise Enhanced Data Protection v1.5",
     "description":  "This app protection policy introduces data leakage prevention mechanisms and minimum OS requirements. This is the configuration that is applicable to most mobile users accessing work or school data.",
     "roleScopeTagIds":  [
                             "0"
@@ -18,7 +18,7 @@
     "pinRequired":  true,
     "maximumPinRetries":  5,
     "simplePinBlocked":  false,
-    "minimumPinLength":  4,
+    "minimumPinLength":  6,
     "pinCharacterSet":  "numeric",
     "periodBeforePinReset":  "PT0S",
     "allowedDataStorageLocations":  [
@@ -32,7 +32,7 @@
     "maximumRequiredOsVersion":  null,
     "maximumWarningOsVersion":  null,
     "maximumWipeOsVersion":  null,
-    "minimumRequiredOsVersion":  "9.0",
+    "minimumRequiredOsVersion":  "14.8",
     "minimumWarningOsVersion":  null,
     "minimumRequiredAppVersion":  null,
     "minimumWarningAppVersion":  null,
@@ -58,43 +58,23 @@
     "isAssigned":  false,
     "targetedAppManagementLevels":  "unspecified",
     "appGroupType":  "allCoreMicrosoftApps",
-    "screenCaptureBlocked":  true,
-    "disableAppEncryptionIfDeviceEncryptionIsEnabled":  false,
-    "encryptAppData":  true,
-    "minimumRequiredPatchVersion":  null,
-    "minimumWarningPatchVersion":  null,
-    "minimumWipePatchVersion":  null,
-    "allowedAndroidDeviceManufacturers":  null,
-    "appActionIfAndroidDeviceManufacturerNotAllowed":  "block",
-    "requiredAndroidSafetyNetDeviceAttestationType":  "basicIntegrityAndDeviceCertification",
-    "appActionIfAndroidSafetyNetDeviceAttestationFailed":  "block",
-    "requiredAndroidSafetyNetAppsVerificationType":  "enabled",
-    "appActionIfAndroidSafetyNetAppsVerificationFailed":  "block",
-    "customBrowserPackageId":  "",
-    "customBrowserDisplayName":  "",
-    "minimumRequiredCompanyPortalVersion":  null,
-    "minimumWarningCompanyPortalVersion":  null,
-    "minimumWipeCompanyPortalVersion":  null,
-    "keyboardsRestricted":  false,
-    "allowedAndroidDeviceModels":  [
-
-                                   ],
-    "appActionIfAndroidDeviceModelNotAllowed":  "block",
-    "customDialerAppPackageId":  null,
-    "customDialerAppDisplayName":  null,
-    "biometricAuthenticationBlocked":  true,
-    "requiredAndroidSafetyNetEvaluationType":  "hardwareBacked",
-    "blockAfterCompanyPortalUpdateDeferralInDays":  0,
-    "warnAfterCompanyPortalUpdateDeferralInDays":  0,
-    "wipeAfterCompanyPortalUpdateDeferralInDays":  0,
-    "deviceLockRequired":  true,
-    "appActionIfDeviceLockNotSet":  "block",
-    "connectToVpnOnLaunch":  false,
-    "exemptedAppPackages":  [
-
-                            ],
-    "approvedKeyboards":  [
-
-                          ],
-    "@odata.type":  "#microsoft.graph.androidManagedAppProtection"
+    "appDataEncryptionType":  "whenDeviceLocked",
+    "minimumRequiredSdkVersion":  null,
+    "faceIdBlocked":  false,
+    "minimumWipeSdkVersion":  null,
+    "allowedIosDeviceModels":  null,
+    "appActionIfIosDeviceModelNotAllowed":  "block",
+    "thirdPartyKeyboardsBlocked":  false,
+    "filterOpenInToOnlyManagedApps":  false,
+    "disableProtectionOfManagedOutboundOpenInData":  false,
+    "protectInboundDataFromUnknownSources":  false,
+    "customBrowserProtocol":  "",
+    "customDialerAppProtocol":  null,
+    "exemptedAppProtocols":  [
+                                 {
+                                     "name":  "Default",
+                                     "value":  "skype;app-settings;calshow;itms;itmss;itms-apps;itms-appss;itms-services;"
+                                 }
+                             ],
+    "@odata.type":  "#microsoft.graph.iosManagedAppProtection"
 }
