@@ -1,68 +1,69 @@
 # Intune App Protection Framework (Automation)
 
-This repository provides a PowerShell-based automation framework to import an Intune **App Protection** baseline using JSON templates. The framework is designed to be **repeatable** (safe to re-run) by applying **duplicate detection** based on policy `displayName` before creating new objects.
+## Overview
 
-## Background and origin
+This repository provides a PowerShell-based automation framework to deploy a complete Microsoft Intune App Protection baseline using a single, self-contained script.
 
-Microsoft has published guidance and a recommended **data protection framework** for Intune app protection policies (APP), including the concept of importing **sample JSON templates** for the configuration framework using PowerShell scripts. This repository packages the framework in a customer-ready form and provides an updated automation approach for environments where the original sample distribution method is no longer practical for direct, ready-to-use downloads.
+The script enables organizations to deploy a standardized set of App Protection configurations in a consistent and repeatable manner without relying on external configuration files. All required policy definitions are embedded directly within the script, simplifying execution and reducing operational complexity.
 
-Historically, some Microsoft and community scripts for Intune/Entra automation relied on the legacy **AzureAD** / **AzureADPreview** PowerShell modules. Microsoft has since announced the retirement of these modules and recommends migrating scripts to the **Microsoft Graph PowerShell SDK** (or Microsoft Entra PowerShell) to avoid disruption.
+The solution aligns with Microsoft guidance for mobile application management and supports rapid implementation of a production-ready protection baseline across iOS and Android environments.
 
-Operationally, the legacy AzureAD/AzureADPreview modules have also been associated with PowerShell compatibility and assembly-loading issues in some contexts (for example, PowerShell 7 / Function Apps), which often led customers to pin module versions or use Windows PowerShell compatibility modes. This framework therefore standardizes on the Microsoft Graph PowerShell module as the supported and forward-looking approach.
+## Key Capabilities
 
-## What this framework imports
+The script automates the end-to-end deployment of core Intune security components required for mobile application protection.
 
-When executed end-to-end, the framework imports the following Intune artifacts:
+It provisions device compliance policies to evaluate device posture and enforce security requirements. It deploys device configuration profiles to harden relevant device settings. It also creates and configures managed app protection policies to ensure that corporate data is secured within supported applications.
 
-- **Device compliance policies** (required to evaluate device posture)
-- **Device configuration profiles** (required to harden and configure the device)
-- **Managed app protection (MAM) policies** (required to protect corporate data inside apps)
+The deployed app protection policies implement controls such as access requirements, encryption enforcement, and restrictions to prevent data leakage between managed and unmanaged applications.
 
-## Quick start
+## What Has Changed
 
-1. Open an administrative PowerShell session.
-2. Change directory to the folder that contains the scripts.
-3. Run the entry point script **without parameters**: .\Import-AppProtectionPolicy.ps1
+The previous implementation relied on multiple scripts and external JSON templates that had to be downloaded, maintained, and imported into the environment. This approach introduced operational complexity and required additional lifecycle management of configuration artifacts.
 
-### Execution order
+The current implementation replaces this model with a single, fully self-contained script. All configuration elements are defined within the script itself, removing dependencies on external files and simplifying deployment. This results in improved portability, easier maintenance, and a more deterministic execution model.
 
-The entry point is intended to call the following scripts **in this order**:
+## Background: App Protection Framework
 
-1. `Import-CompliancePolicy.ps1`
-2. `Import-DeviceConfiguration.ps1`
-3. `Import-ManagedAppPolicy.ps1`
-<BLOCKQUOTE><P>If your package uses a different entry point name (for example `Import-AppProtectionConfig.ps1`), the expected behavior remains the same: the entry point orchestrates the three imports above.</P></BLOCKQUOTE>
+Microsoft Intune provides an App Protection Data Protection Framework that defines structured guidance for securing organizational data within mobile applications.
 
-## Optional post-step: scope tags
+The framework introduces a set of recommended configurations organized into three distinct levels. Each level builds upon the previous one and reflects increasing levels of protection aligned to organizational risk profiles.
 
-After importing the policies, you may optionally run the scope tag assignment script: .\AssignEUDScopeTag.ps1
+The first level focuses on baseline protection by ensuring that applications enforce access controls such as PIN requirements and encryption while supporting selective wipe capabilities.
 
-This post-step is **optional** and **separate** from the import flow.
+The second level introduces enhanced data protection by applying additional restrictions to reduce the risk of data leakage. This includes controls governing data transfer between applications and minimum platform requirements.
 
-### Requirements
+The third level provides advanced protection for high-risk scenarios and typically includes stronger authentication requirements and integration with additional threat protection capabilities.
 
-- A scope tag named **`EUD`** must already exist in Intune.
-- If you prefer a different scope tag name, you can adjust the script to match your environment.
+This structured approach allows organizations to align mobile application protection with their security requirements while balancing usability and operational impact.
 
-### PAW separation
+## Purpose of This Framework
 
-The scope tag assignment script intentionally **excludes** policies with the prefix `PAW-`. This supports environments that also manage **Privileged Access Workstations (PAW/PAW-CSM)** and follow the common practice of separating management scope between **Enterprise User Devices (EUD)** and **PAWs**.
+This repository translates Microsoft’s recommended App Protection configurations into an automated deployment model.
 
-## Prerequisites
+The purpose of the framework is to simplify adoption, ensure consistent implementation across environments, and reduce the effort required to deploy and maintain secure configurations. It enables organizations to accelerate the rollout of App Protection Policies and minimize configuration drift over time.
 
-- Microsoft Graph PowerShell SDK installed (the scripts validate the module presence).
-- An account that can consent to and use the required Graph permissions.
+The framework is particularly relevant for supporting secure bring-your-own-device scenarios and modern mobile-first access patterns.
 
-## Microsoft documentation references
+## Technical Design
 
-The following Microsoft sources provide the conceptual and operational context for this framework:
+The implementation follows a modern and simplified design approach.
 
-- **Data protection framework using app protection policies** (taxonomy and guidance; references importing sample JSON templates using PowerShell)
-- **Create and deploy app protection policies** (how APPs are created and assigned; links back to the framework)
-- **App protection policy settings for iOS/iPadOS** (settings reference used when reviewing the JSON templates)
-- **AzureAD PowerShell retirement and migration guidance** (Microsoft direction to migrate legacy AzureAD/AzureADPreview scripts)
-- **Microsoft Graph PowerShell SDK guidance** (Microsoft statement that Azure AD module is being replaced by Graph PowerShell)
+The script uses the Microsoft Graph PowerShell SDK to configure Intune resources. It is designed to be safely re-executable and avoids creating duplicate configurations by checking for existing objects during execution. All policy definitions are embedded directly in the script to ensure consistent and predictable outcomes.
 
-## Support statement
+This design eliminates reliance on legacy tooling and reduces external dependencies, making the solution easier to operate and maintain.
 
-This framework uses Microsoft Graph calls to create Intune policy objects from JSON. Always validate the resulting policies and assignments in the Intune admin center before rolling out broadly.
+## Execution
+
+The script requires an Intune-enabled environment and appropriate administrative permissions to create and manage policies.
+
+Execution is performed by running the PowerShell script, which connects to Microsoft Graph and deploys the required configurations end-to-end without requiring additional input files.
+
+## Deployment Model Recommendation
+
+It is recommended to follow a staged rollout approach when deploying App Protection configurations.
+
+Organizations should begin with a test environment, followed by a pilot group of users, and finally expand to full production deployment. This approach reduces risk and allows validation of policies before broad enforcement.
+
+## Optional Post-Deployment Steps
+
+After deployment, organizations may choose to extend the configuration by assigning policies to specific user groups, integrating with Conditional Access policies, and aligning configurations with identity governance models.
