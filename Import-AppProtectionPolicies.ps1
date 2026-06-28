@@ -10,7 +10,7 @@
     Required Graph scopes:
         DeviceManagementApps.ReadWrite.All
         DeviceManagementConfiguration.ReadWrite.All
-        DeviceManagementRBAC.Read.All
+        DeviceManagementRBAC.ReadWrite.All
 
     Required modules (installed automatically if missing):
         Microsoft.Graph.Authentication
@@ -85,7 +85,7 @@ Write-Host '  A browser window will open for interactive sign-in.' -ForegroundCo
 
 Connect-MgGraph -Scopes 'DeviceManagementApps.ReadWrite.All',
                          'DeviceManagementConfiguration.ReadWrite.All',
-                         'DeviceManagementRBAC.Read.All' `
+                         'DeviceManagementRBAC.ReadWrite.All' `
     -NoWelcome -ErrorAction Stop
 
 $ctx = Get-MgContext
@@ -97,14 +97,23 @@ Write-Host $ctx.TenantId
 Write-Host ''
 
 # ---------------------------------------------------------------------------
-# Resolve scope tag
+# Resolve or create scope tag
 # ---------------------------------------------------------------------------
 $escapedTag  = $ScopeTagName -replace "'", "''"
 $tagResponse = Invoke-MgGraphRequest -Method GET `
     -Uri "https://graph.microsoft.com/beta/deviceManagement/roleScopeTags?`$filter=displayName eq '$escapedTag'"
 $scopeTag = $tagResponse.value | Select-Object -First 1
-if (-not $scopeTag) { throw "Scope tag '$ScopeTagName' not found in Intune." }
-Write-Host "Scope tag '$ScopeTagName' -> $($scopeTag.id)" -ForegroundColor DarkGray
+
+if (-not $scopeTag) {
+    Write-Host "  Scope tag '$ScopeTagName' not found - creating..." -ForegroundColor Yellow
+    $scopeTag = Invoke-MgGraphRequest -Method POST -ContentType 'application/json' `
+        -Uri 'https://graph.microsoft.com/beta/deviceManagement/roleScopeTags' `
+        -Body (([PSCustomObject]@{ displayName = $ScopeTagName; description = '' }) | ConvertTo-Json)
+    Write-Host "  Scope tag '$ScopeTagName' created (ID: $($scopeTag.id))" -ForegroundColor Green
+}
+else {
+    Write-Host "  Scope tag '$ScopeTagName' found (ID: $($scopeTag.id))" -ForegroundColor DarkGray
+}
 Write-Host ''
 
 # ---------------------------------------------------------------------------
