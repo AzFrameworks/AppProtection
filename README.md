@@ -1,5 +1,9 @@
 # Intune Mobile Security Protection Framework
 
+## Disclaimer
+
+This framework packages established Microsoft mobile security guidance into an operational deployment model intended to accelerate implementation and improve consistency. The included protection levels, policy configurations, and deployment recommendations should be treated as a starting point rather than a prescriptive end state. Organizations remain responsible for reviewing, validating, testing, approving, assigning, and maintaining all policies according to their own security requirements, compliance obligations, risk tolerance, operational constraints, and user experience objectives. The accompanying automation simplifies deployment but does not replace governance, security review, change management, or ongoing operational oversight.
+
 ## Summary
 
 The Intune Mobile Security Protection Framework is a comprehensive implementation framework designed to help organizations deploy a consistent, Microsoft-aligned mobile security baseline across Android Enterprise and iOS/iPadOS devices. The framework brings together application protection, device compliance, device hardening, and Conditional Access integration into a structured and operationally ready solution that can be rapidly deployed through automation while remaining fully customizable to organizational requirements.
@@ -42,7 +46,3 @@ Ultimately, the Intune Mobile Security Protection Framework provides organizatio
 - Simplified adoption of enterprise mobile security controls
 - Scalable deployment model suitable for organizations of all sizes
 - Flexible framework that can be customized to meet specific business and regulatory requirements
-
-## Disclaimer
-
-This framework packages established Microsoft mobile security guidance into an operational deployment model intended to accelerate implementation and improve consistency. The included protection levels, policy configurations, and deployment recommendations should be treated as a starting point rather than a prescriptive end state. Organizations remain responsible for reviewing, validating, testing, approving, assigning, and maintaining all policies according to their own security requirements, compliance obligations, risk tolerance, operational constraints, and user experience objectives. The accompanying automation simplifies deployment but does not replace governance, security review, change management, or ongoing operational oversight.
