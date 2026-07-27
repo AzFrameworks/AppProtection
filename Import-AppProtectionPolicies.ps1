@@ -1,24 +1,34 @@
 <#
-    .SYNOPSIS
+.SYNOPSIS
     Imports 24 Intune policies (App Protection, Compliance, Device Configuration)
-    and assigns the EUD scope tag. No external JSON files or specific path required.
-
-    .PARAMETER ScopeTagName
+    and assigns the EUD scope tag. Creates the scope tag if it does not exist.
+.DESCRIPTION
+    Installs required modules, authenticates to Microsoft Graph, resolves or
+    creates the EUD scope tag, checks for existing policies with the same name,
+    then imports all 24 policies across three Graph endpoints. The script is
+    self-sufficient and requires no external files or specific execution path.
+.PARAMETER ScopeTagName
     Display name of the Intune scope tag to assign to every policy. Defaults to "EUD".
-
-    .NOTES
-    Required Graph scopes:
-        DeviceManagementApps.ReadWrite.All
-        DeviceManagementConfiguration.ReadWrite.All
-        DeviceManagementRBAC.ReadWrite.All
-
-    Required modules (installed automatically if missing):
-        Microsoft.Graph.Authentication
-
-    .EXAMPLE
+.EXAMPLE
     .\Import-AppProtectionPolicies.ps1
+.EXAMPLE
     .\Import-AppProtectionPolicies.ps1 -ScopeTagName "EUD"
 #>
+
+<#
+DISCLAIMER
+----------
+This script is provided "AS IS" without warranty of any kind, express or implied,
+including but not limited to warranties of merchantability, fitness for a particular
+purpose, or non-infringement. Use at your own risk.
+
+The author(s) and contributors accept no liability for any damage, data loss, or
+unintended configuration changes resulting from the use of this script.
+
+Always review and test this script in a non-production / staging environment before
+running it against any production tenant or device fleet.
+#>
+
 [CmdletBinding()]
 param(
     [string] $ScopeTagName = 'EUD'
@@ -26,25 +36,6 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
-# ---------------------------------------------------------------------------
-# Disclaimer
-# ---------------------------------------------------------------------------
-Write-Host ''
-Write-Host '===============================================================' -ForegroundColor Yellow
-Write-Host '  DISCLAIMER' -ForegroundColor Yellow
-Write-Host '===============================================================' -ForegroundColor Yellow
-Write-Host '  This script creates Intune policies in your Microsoft tenant' -ForegroundColor Yellow
-Write-Host '  via the Microsoft Graph API.' -ForegroundColor Yellow
-Write-Host ''
-Write-Host '  - Run this script only in a tenant you are authorised to'    -ForegroundColor Yellow
-Write-Host '    manage and only with an account that holds the necessary'   -ForegroundColor Yellow
-Write-Host '    Intune Administrator or equivalent permissions.'            -ForegroundColor Yellow
-Write-Host '  - Review all embedded policy definitions before running.'     -ForegroundColor Yellow
-Write-Host '  - Existing policies with matching display names are skipped.' -ForegroundColor Yellow
-Write-Host '  - The author accepts no liability for unintended changes.'    -ForegroundColor Yellow
-Write-Host '===============================================================' -ForegroundColor Yellow
-Write-Host ''
 
 # ---------------------------------------------------------------------------
 # Prerequisites - NuGet provider
@@ -78,17 +69,27 @@ Write-Host '  Prerequisites OK.' -ForegroundColor Green
 Write-Host ''
 
 # ---------------------------------------------------------------------------
-# Interactive Graph authentication
+# Interactive Graph authentication - only if no active session with required scopes
 # ---------------------------------------------------------------------------
-Write-Host 'Connecting to Microsoft Graph...' -ForegroundColor White
-Write-Host '  A browser window will open for interactive sign-in.' -ForegroundColor DarkGray
-
-Connect-MgGraph -Scopes 'DeviceManagementApps.ReadWrite.All',
-                         'DeviceManagementConfiguration.ReadWrite.All',
-                         'DeviceManagementRBAC.ReadWrite.All' `
-    -NoWelcome -ErrorAction Stop
+$requiredScopes = @(
+    'DeviceManagementApps.ReadWrite.All',
+    'DeviceManagementConfiguration.ReadWrite.All',
+    'DeviceManagementRBAC.ReadWrite.All'
+)
 
 $ctx = Get-MgContext
+$missingScopes = $requiredScopes | Where-Object { $ctx.Scopes -notcontains $_ }
+
+if (-not $ctx -or $missingScopes) {
+    Write-Host 'Connecting to Microsoft Graph...' -ForegroundColor White
+    Write-Host '  A browser window will open for interactive sign-in.' -ForegroundColor DarkGray
+    Connect-MgGraph -Scopes $requiredScopes -NoWelcome -ErrorAction Stop
+    $ctx = Get-MgContext
+}
+else {
+    Write-Host 'Using existing Microsoft Graph session.' -ForegroundColor DarkGray
+}
+
 Write-Host ''
 Write-Host '  Signed in as : ' -NoNewline -ForegroundColor Green
 Write-Host $ctx.Account
