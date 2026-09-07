@@ -78,7 +78,11 @@ $requiredScopes = @(
 )
 
 $ctx = Get-MgContext
-$missingScopes = $requiredScopes | Where-Object { $ctx.Scopes -notcontains $_ }
+# When a session was established via access token (e.g., by another script) the context
+# object may not carry a Scopes property. Probe before accessing to avoid
+# Set-StrictMode -Version Latest throwing PropertyNotFoundException.
+$ctxScopes = if ($ctx -and $ctx.PSObject.Properties['Scopes']) { @($ctx.Scopes) } else { @() }
+$missingScopes = $requiredScopes | Where-Object { $ctxScopes -notcontains $_ }
 
 if (-not $ctx -or $missingScopes) {
     Write-Host 'Connecting to Microsoft Graph...' -ForegroundColor White
